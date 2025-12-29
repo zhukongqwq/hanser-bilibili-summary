@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B站年度 Hanser 浓度分析 (Pro版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f4f5f7; color: #333; }
+        h1 { text-align: center; color: #fb7299; margin-bottom: 30px; }
+        .box { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        #qr-container { text-align: center; }
+        #qr-img { border: 1px solid #eee; padding: 10px; border-radius: 8px; }
+        .keyword-area { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 15px; }
+        .kw-label { padding: 5px 12px; background: #f1f2f3; border-radius: 20px; cursor: pointer; font-size: 13px; user-select: none; border: 1px solid transparent; transition: all 0.2s; }
+        .kw-check:checked + .kw-label { background: #e7f5fa; color: #00a1d6; border-color: #00a1d6; font-weight: bold; }
+        .kw-check { display: none; }
+        .custom-tag-row { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+        .custom-input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; width: 200px; outline: none; }
+        .custom-btn { padding: 8px 15px; background: #fb7299; color: white; border: none; border-radius: 6px; cursor: pointer; }
+        .progress-wrapper { margin-bottom: 20px; }
+        .progress-bg { width: 100%; background: #e7e7e7; height: 12px; border-radius: 6px; overflow: hidden; }
+        .progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #fb7299, #c4587a); transition: width 0.3s ease; }
+        .status-text { text-align: center; font-size: 14px; color: #666; margin-top: 8px; }
+        .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .stat-card { background: #f9f9f9; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-num { font-size: 28px; font-weight: bold; color: #333; }
+        .stat-label { font-size: 13px; color: #888; }
+        .highlight { color: #fb7299; }
+        .chart-container { position: relative; height: 350px; width: 100%; margin-bottom: 20px; }
+        .controls { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
+        .btn { background: #00a1d6; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 15px; transition: background 0.2s; }
+        .btn:hover { background: #00b5e5; }
+        .btn.stop { background: #ff5050; }
+        .btn.clear { background: #95a5a6; }
+        .btn.ai { background: #6c5ce7; font-weight: bold; }
+        .btn.logout { background: transparent; color: #999; border: 1px solid #ddd; padding: 8px 16px; font-size: 13px; }
+        .btn.logout:hover { color: #ff5050; border-color: #ff5050; }
+        .hidden { display: none; }
+        .server-notice { font-size: 12px; color: #999; text-align: center; margin-top: 20px; }
+    </style>
+</head>
+<body>
+
+    <h1>📊 B站年度 Hanser 浓度分析</h1>
+
+    <!-- 1. 登录模块 -->
+    <div id="login-section" class="box">
+        <div id="qr-container">
+            <img id="qr-img" src="" width="180" alt="二维码" />
+            <div style="margin-top:10px; color:#666;">请使用 Bilibili App 扫码登录</div>
+        </div>
+    </div>
+
+    <!-- 2. 分析仪表盘 -->
+    <div id="dashboard-section" class="box hidden">
+        <div class="keyword-area" id="keyword-container"></div>
+
+        <div class="custom-tag-row">
+            <input type="text" id="custom-tag-input" class="custom-input" placeholder="添加自定义标签 (如: 崩坏3)">
+            <button class="custom-btn" onclick="addCustomTag()">添加 Tag</button>
+        </div>
+
+        <div class="progress-wrapper">
+            <div class="progress-bg"><div class="progress-fill" id="progress-bar"></div></div>
+            <div class="status-text" id="status-text">准备就绪</div>
+        </div>
+
+        <div class="result-grid">
+            <div class="stat-card">
+                <div class="stat-num" id="total-scanned">0</div>
+                <div class="stat-label">已扫描/已保存</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-num highlight" id="total-concentration">0%</div>
+                <div class="stat-label">总浓度</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="myChart"></canvas>
+        </div>
+
+        <div class="controls">
+            <button class="btn" id="start-btn" onclick="startFetching()">🚀 开始回溯</button>
+            <button class="btn stop hidden" id="stop-btn" onclick="stopFetching()">⏹ 暂停并保存</button>
+            <button class="btn clear" onclick="clearData()">🗑 清空云端存档</button>
+            <button class="btn ai" onclick="goToAIAnalysis()">🧠 前往 AI 深度画像</button>
+        </div>
+
+        <div style="text-align: center; margin-top: 20px;">
+            <button class="btn logout" onclick="logout()">退出登录 / 切换账号</button>
+        </div>
+    </div>
+    
+    <div class="server-notice">数据仅保存在服务器临时文件中，24小时未活动将自动清理。</div>
+
+    <script>
+        // === 1. Client ID & Session ===
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        let clientId = localStorage.getItem('bili_client_id');
+        if (!clientId) {
+            clientId = generateUUID();
+            localStorage.setItem('bili_client_id', clientId);
+        }
+
+        // === 2. 变量 ===
+        const defaultKeywords = [
+            { id: 'hanser', label: 'Hanser', checked: true },
+            { id: 'hanse', label: '憨色', checked: true },
+            { id: 'silverwolf', label: '银狼', checked: true },
+            { id: 'bronya', label: '布洛妮娅', checked: true },
+            { id: 'duck', label: '板鸭', checked: false },
+            { id: 'starrail', label: '星穹铁道', checked: false },
+            { id: 'honkai', label: '崩坏3', checked: false },
+            { id: 'zzz', label: '绝区零', checked: false }
+        ];
+
+        let qrcodeKey = '';
+        let userCookie = '';
+        let isFetching = false;
+        let allHistoryData = []; 
+        let currentCursor = null;
+        let chartInstance = null;
+
+        // === 3. 初始化 ===
+        function init() {
+            renderKeywords();
+            initChart();
+            
+            // 检查是否有保存的登录状态 (24小时内)
+            if (checkSavedSession()) {
+                console.log('Session restored');
+                showDashboard();
+            } else {
+                getQRCode();
+            }
+        }
+
+        // === Session 管理逻辑 ===
+        function saveSession(cookie) {
+            const session = {
+                cookie: cookie,
+                expiry: Date.now() + 24 * 60 * 60 * 1000 // 24小时后过期
+            };
+            localStorage.setItem('bili_session', JSON.stringify(session));
+        }
+
+        function checkSavedSession() {
+            const sessionStr = localStorage.getItem('bili_session');
+            if (!sessionStr) return false;
+            
+            try {
+                const session = JSON.parse(sessionStr);
+                if (Date.now() < session.expiry) {
+                    userCookie = session.cookie;
+                    return true;
+                } else {
+                    localStorage.removeItem('bili_session'); // 过期清除
+                    return false;
+                }
+            } catch (e) { return false; }
+        }
+
+        function logout() {
+            localStorage.removeItem('bili_session');
+            location.reload();
+        }
+
+        function showDashboard() {
+            document.getElementById('login-section').classList.add('hidden');
+            document.getElementById('dashboard-section').classList.remove('hidden');
+            loadSavedProgress();
+        }
+
+        // === 4. 基础 UI 函数 ===
+        function renderKeywords() {
+            const container = document.getElementById('keyword-container');
+            container.innerHTML = defaultKeywords.map(k => `
+                <input type="checkbox" id="kw-${k.id}" class="kw-check" value="${k.label}" ${k.checked ? 'checked' : ''} onchange="updateStats()">
+                <label for="kw-${k.id}" class="kw-label">${k.label}</label>
+            `).join('');
+        }
+
+        function addCustomTag() {
+            const input = document.getElementById('custom-tag-input');
+            const val = input.value.trim();
+            if (!val) return;
+            const id = 'custom-' + Date.now();
+            const container = document.getElementById('keyword-container');
+            container.insertAdjacentHTML('beforeend', `
+                <input type="checkbox" id="${id}" class="kw-check" value="${val}" checked onchange="updateStats()">
+                <label for="${id}" class="kw-label">${val}</label>
+            `);
+            input.value = '';
+            updateStats();
+        }
+
+        function goToAIAnalysis() {
+            if (allHistoryData.length === 0) {
+                alert('请先获取数据');
+                return;
+            }
+            window.location.href = `/analysis?clientId=${clientId}`;
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('myChart').getContext('2d');
+            chartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '出现次数',
+                        data: [],
+                        backgroundColor: 'rgba(251, 114, 153, 0.6)',
+                        borderColor: 'rgba(251, 114, 153, 1)',
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        // === 5. 登录流程 ===
+        async function getQRCode() {
+            try {
+                const res = await fetch('/get-qrcode');
+                const data = await res.json();
+                document.getElementById('qr-img').src = data.qrImage;
+                qrcodeKey = data.qrcode_key;
+                pollLoginStatus();
+            } catch (e) { alert('服务器连接失败'); }
+        }
+
+        function pollLoginStatus() {
+            const timer = setInterval(async () => {
+                const res = await fetch(`/check-login?qrcode_key=${qrcodeKey}`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    clearInterval(timer);
+                    userCookie = data.cookie;
+                    
+                    // 登录成功，保存 Session
+                    saveSession(userCookie);
+                    
+                    showDashboard();
+                }
+            }, 2000);
+        }
+
+        // === 6. 数据逻辑 ===
+        async function loadSavedProgress() {
+            try {
+                const res = await fetch('/load-progress', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clientId })
+                });
+                const data = await res.json();
+                if (data.list && data.list.length > 0) {
+                    allHistoryData = data.list;
+                    currentCursor = data.cursor;
+                    updateStats();
+                    const lastItem = allHistoryData[allHistoryData.length - 1];
+                    updateProgressBar(lastItem.view_at);
+                    document.getElementById('start-btn').innerText = `🚀 继续回溯 (已存 ${allHistoryData.length} 条)`;
+                    document.getElementById('status-text').innerText = '已加载云端存档';
+                }
+            } catch (e) { console.log('无存档'); }
+        }
+
+        async function clearData() {
+            if (!confirm('确定清空云端存档？')) return;
+            await fetch('/clear-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clientId })
+            });
+            allHistoryData = [];
+            currentCursor = null;
+            updateStats();
+            document.getElementById('start-btn').innerText = '🚀 开始回溯';
+            document.getElementById('status-text').innerText = '存档已清空';
+            document.getElementById('progress-bar').style.width = '0%';
+        }
+
+        async function startFetching() {
+            if (isFetching) return;
+            isFetching = true;
+            document.getElementById('start-btn').classList.add('hidden');
+            document.getElementById('stop-btn').classList.remove('hidden');
+            document.querySelectorAll('.kw-check').forEach(el => el.disabled = true);
+
+            const now = Date.now() / 1000;
+            const oneYearSeconds = 365 * 24 * 60 * 60;
+            const oneYearAgo = now - oneYearSeconds;
+            
+            try {
+                while (isFetching) {
+                    const res = await fetch('/get-history-page', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cookie: userCookie, cursor: currentCursor })
+                    });
+                    const data = await res.json();
+
+                    // 如果 Cookie 失效 (B站返回错误)
+                    if (data.error) {
+                         alert('登录已失效，请重新登录');
+                         logout();
+                         return;
+                    }
+
+                    if (!data.list || data.list.length === 0) {
+                        stopFetching('已到达记录尽头');
+                        break;
+                    }
+
+                    await fetch('/save-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ newItems: data.list, cursor: data.cursor, clientId: clientId })
+                    });
+
+                    allHistoryData.push(...data.list);
+                    currentCursor = data.cursor;
+
+                    const lastItemTime = data.list[data.list.length - 1].view_at;
+                    updateProgressBar(lastItemTime);
+                    updateStats();
+
+                    if (lastItemTime < oneYearAgo) {
+                        stopFetching('已完成一年数据扫描');
+                        break;
+                    }
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+            } catch (err) {
+                console.error(err);
+                stopFetching('网络错误或服务中断');
+            }
+        }
+
+        function stopFetching(msg = '暂停') {
+            isFetching = false;
+            document.getElementById('start-btn').classList.remove('hidden');
+            document.getElementById('stop-btn').classList.add('hidden');
+            document.getElementById('start-btn').innerText = `🚀 继续回溯 (已存 ${allHistoryData.length} 条)`;
+            document.getElementById('status-text').innerText = `状态: ${msg}`;
+            document.querySelectorAll('.kw-check').forEach(el => el.disabled = false);
+        }
+
+        function updateProgressBar(timestamp) {
+            const now = Date.now() / 1000;
+            const oneYearSeconds = 365 * 24 * 60 * 60;
+            const percent = Math.min(100, ((now - timestamp) / oneYearSeconds) * 100);
+            const dateStr = new Date(timestamp * 1000).toLocaleDateString();
+            document.getElementById('progress-bar').style.width = `${percent}%`;
+            document.getElementById('status-text').innerText = `回溯至: ${dateStr} (${percent.toFixed(1)}%)`;
+        }
+
+        function updateStats() {
+            const checkboxes = document.querySelectorAll('.kw-check:checked');
+            const activeKeywords = Array.from(checkboxes).map(cb => cb.value);
+
+            if (allHistoryData.length === 0) {
+                chartInstance.data.labels = activeKeywords;
+                chartInstance.data.datasets[0].data = activeKeywords.map(() => 0);
+                chartInstance.update();
+                return;
+            }
+
+            let totalHitCount = 0;
+            const keywordCounts = {}; 
+            activeKeywords.forEach(k => keywordCounts[k] = 0);
+
+            allHistoryData.forEach(item => {
+                const fullText = `${item.title} ${item.desc} ${item.tags} ${item.author}`.toLowerCase();
+                let isHit = false;
+                activeKeywords.forEach(key => {
+                    if (fullText.includes(key.toLowerCase())) {
+                        keywordCounts[key]++;
+                        isHit = true;
+                    }
+                });
+                if (isHit) totalHitCount++;
+            });
+
+            document.getElementById('total-scanned').innerText = allHistoryData.length;
+            const concentration = ((totalHitCount / allHistoryData.length) * 100).toFixed(1);
+            document.getElementById('total-concentration').innerText = `${concentration}%`;
+
+            chartInstance.data.labels = activeKeywords;
+            chartInstance.data.datasets[0].data = activeKeywords.map(k => keywordCounts[k]);
+            chartInstance.update();
+        }
+
+        init();
+    </script>
+</body>
+</html>

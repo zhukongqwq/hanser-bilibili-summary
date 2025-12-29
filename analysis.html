@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hanser 浓度 AI 深度分析</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f4f5f7; color: #333; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #6c5ce7; }
+        
+        .box { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        
+        .loading { text-align: center; color: #666; font-size: 18px; padding: 50px; }
+        .spinner { display: inline-block; width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #6c5ce7; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Markdown 样式 */
+        .markdown-body { line-height: 1.6; }
+        .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 20px; }
+        .markdown-body ul { padding-left: 20px; }
+        .markdown-body li { margin-bottom: 5px; }
+        .markdown-body strong { color: #fb7299; }
+        
+        .btn { display: block; width: 200px; margin: 20px auto; padding: 12px; background: #6c5ce7; color: white; text-align: center; border: none; border-radius: 6px; cursor: pointer; text-decoration: none; font-size: 16px; }
+        .btn:hover { background: #5b4cc4; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>🧠 AI 深度画像报告</h1>
+        <p>基于您最近一年的 Hanser 相关浏览记录</p>
+    </div>
+
+    <div id="content-area" class="box">
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div>正在加载数据并召唤 AI 分析中...<br><span style="font-size:12px;color:#999">这可能需要 10-30 秒</span></div>
+        </div>
+        <div id="report" class="markdown-body" style="display:none;"></div>
+    </div>
+
+    <a href="/" class="btn">返回扫描页</a>
+
+    <script>
+        // 获取 URL 参数
+        const urlParams = new URLSearchParams(window.location.search);
+        const clientId = urlParams.get('clientId');
+
+        async function startAnalysis() {
+            if (!clientId) {
+                showError('未找到用户 ID，请从主页跳转进入。');
+                return;
+            }
+
+            try {
+                // 1. 加载用户数据
+                const loadRes = await fetch('/load-progress', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clientId })
+                });
+                const data = await loadRes.json();
+                
+                if (!data.list || data.list.length === 0) {
+                    showError('暂无浏览数据，请先去扫描。');
+                    return;
+                }
+
+                // 2. 筛选 Hanser 相关视频 (本地简单筛选，减少传输量)
+                const keywords = ['hanser', '憨色', '255', '银狼', '布洛妮娅', '板鸭'];
+                const filteredList = data.list.filter(item => {
+                    const str = (item.title + item.desc + item.tags + item.author).toLowerCase();
+                    return keywords.some(k => str.includes(k));
+                });
+
+                if (filteredList.length === 0) {
+                    showError('你的记录里似乎没有检测到 Hanser 相关的视频，AI 无法分析。');
+                    return;
+                }
+
+                // 3. 发送给后端 AI 接口
+                const aiRes = await fetch('/analyze-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videoData: filteredList })
+                });
+
+                const aiData = await aiRes.json();
+
+                if (aiData.error) {
+                    showError('AI 分析失败: ' + aiData.error);
+                } else {
+                    renderReport(aiData.result);
+                }
+
+            } catch (e) {
+                console.error(e);
+                showError('网络请求错误');
+            }
+        }
+
+        function renderReport(markdownText) {
+            document.getElementById('loading').style.display = 'none';
+            const reportDiv = document.getElementById('report');
+            reportDiv.style.display = 'block';
+            reportDiv.innerHTML = marked.parse(markdownText);
+        }
+
+        function showError(msg) {
+            document.getElementById('loading').innerHTML = `<p style="color:red">${msg}</p>`;
+        }
+
+        // 页面加载即开始
+        startAnalysis();
+    </script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统管理后台</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f4f5f7; color: #333; }
+        .box { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h2 { text-align: center; color: #2c3e50; margin-bottom: 25px; }
+        
+        .form-group { margin-bottom: 18px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 14px; }
+        input[type="text"], input[type="password"], textarea { 
+            width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        input:focus, textarea:focus { border-color: #00a1d6; outline: none; }
+        
+        textarea { height: 150px; resize: vertical; line-height: 1.5; font-size: 13px; }
+        
+        .btn-group { display: flex; gap: 10px; margin-top: 20px; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; font-weight: bold; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+        
+        .btn-save { background: #00a1d6; color: white; }
+        .btn-load { background: #2c3e50; color: white; }
+        .btn-reset { background: #95a5a6; color: white; flex: 0 0 auto; width: auto; font-size: 12px; padding: 5px 10px; margin-top: 5px; }
+
+        .hint { font-size: 12px; color: #888; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>🤖 AI 服务配置</h2>
+        
+        <div class="form-group">
+            <label>管理员密码 (必须填写)</label>
+            <input type="password" id="password" placeholder="请输入 server.js 中配置的密码">
+            <div style="margin-top:10px;">
+                <button class="btn-load" onclick="loadConfig()">📥 读取当前配置</button>
+            </div>
+        </div>
+
+        <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+
+        <div class="form-group">
+            <label>API Base URL</label>
+            <input type="text" id="apiUrl" placeholder="例如: https://api.bltcy.ai/v1">
+            <div class="hint">系统会自动补全 /chat/completions</div>
+        </div>
+
+        <div class="form-group">
+            <label>API Key</label>
+            <input type="password" id="apiKey" placeholder="sk-xxxxxxxx">
+        </div>
+
+        <div class="form-group">
+            <label>Model Name</label>
+            <input type="text" id="model" placeholder="例如: gpt-3.5-turbo, deepseek-chat">
+        </div>
+
+        <div class="form-group">
+            <label>
+                自定义系统提示词 (System Prompt)
+                <button class="btn-reset" onclick="resetPrompt()" style="float:right;">↺ 恢复默认</button>
+            </label>
+            <textarea id="systemPrompt" placeholder="在这里告诉 AI 它的角色和任务..."></textarea>
+            <div class="hint">你可以修改这里的规则，让 AI 以不同的风格（如毒舌、傲娇、专业）进行分析。</div>
+        </div>
+
+        <div class="btn-group">
+            <button class="btn-save" onclick="saveConfig()">💾 保存所有配置</button>
+        </div>
+    </div>
+
+    <script>
+        const DEFAULT_PROMPT = `你是一个B站用户画像分析师。请根据用户观看的Hanser相关视频列表（标题、Tag、简介），分析用户的偏好。
+输出 Markdown 格式报告，包含：
+1. **成分饼图**: 用文字描述各类型视频的比例。
+2. **核心关键词**: 总结用户的兴趣点。
+3. **画像总结**: 详细分析用户是喜欢鬼畜、翻唱、游戏实况、切片杂谈还是Cosplay。
+请语言幽默风趣，适当玩梗。`;
+
+        function resetPrompt() {
+            document.getElementById('systemPrompt').value = DEFAULT_PROMPT;
+        }
+
+        async function loadConfig() {
+            const password = document.getElementById('password').value;
+            if (!password) return alert('请先输入管理员密码');
+
+            try {
+                const res = await fetch('/admin/get-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await res.json();
+                
+                if (data.error) {
+                    alert('读取失败: ' + data.error);
+                } else {
+                    document.getElementById('apiUrl').value = data.apiUrl;
+                    document.getElementById('apiKey').value = data.apiKey;
+                    document.getElementById('model').value = data.model;
+                    document.getElementById('systemPrompt').value = data.systemPrompt || DEFAULT_PROMPT;
+                    alert('配置读取成功！');
+                }
+            } catch (e) { alert('网络错误'); }
+        }
+
+        async function saveConfig() {
+            const password = document.getElementById('password').value;
+            const apiUrl = document.getElementById('apiUrl').value;
+            const apiKey = document.getElementById('apiKey').value;
+            const model = document.getElementById('model').value;
+            const systemPrompt = document.getElementById('systemPrompt').value;
+
+            if(!apiUrl || !apiKey || !password) return alert('请填写必要信息 (URL, Key, 密码)');
+
+            try {
+                const res = await fetch('/admin/save-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, apiUrl, apiKey, model, systemPrompt })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert('配置已保存！');
+                } else {
+                    alert('保存失败: ' + data.error);
+                }
+            } catch (e) { alert('网络错误'); }
+        }
+    </script>
+</body>
+</html>
