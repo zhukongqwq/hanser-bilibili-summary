@@ -1,0 +1,22 @@
+# 1. 忽略所有文件和文件夹
+*
+
+# 2. 重新包含（不忽略）你想要的那几个关键文件
+# 使用 ! (感叹号) 来取消忽略
+!server.js
+!index.html
+!analysis.html
+!admin.html
+!README.md
+
+# 强烈建议：同时也上传这两个文件，否则别人下载了没法运行
+!package.json
+!deploy.sh
+
+# 如果你是用 Docker 部署的，建议也加上这两个
+!Dockerfile
+!docker-compose.yml
+
+# 别忘了把 .gitignore 自己也加上，方便下次修改
+!.gitignore
+

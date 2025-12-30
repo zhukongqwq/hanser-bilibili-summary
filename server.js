@@ -10,22 +10,16 @@ const app = express();
 const PORT = 3000;
 
 // === 配置区 ===
-const ADMIN_PASSWORD = "admin"; // ⚠️ 请修改此密码
+const ADMIN_PASSWORD = "admin"; 
 const DATA_DIR = path.join(__dirname, 'user_data');
 const CONFIG_FILE = path.join(__dirname, 'server_config.json');
-
-// 默认提示词 (兜底用)
-const DEFAULT_SYSTEM_PROMPT = `你是一个B站用户画像分析师。请根据用户观看的Hanser相关视频列表（标题、Tag、简介），分析用户的偏好。
-输出 Markdown 格式报告，包含：
-1. **成分饼图**: 用文字描述各类型视频的比例。
-2. **核心关键词**: 总结用户的兴趣点。
-3. **画像总结**: 详细分析用户是喜欢鬼畜、翻唱、游戏实况、切片杂谈还是Cosplay。
-请语言幽默风趣，适当玩梗。`;
+const activeTasks = {}; 
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 
 app.use(cors());
 app.use(cookieParser());
+// 增加上传限制，防止大文件报错
 app.use(express.json({ limit: '50mb' }));
 
 // === 页面路由 ===
@@ -33,25 +27,28 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/analysis', (req, res) => res.sendFile(path.join(__dirname, 'analysis.html')));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 
-// === 辅助函数 ===
-function getUserFilePath(clientId) {
-    if (!clientId || !/^[a-zA-Z0-9-]+$/.test(clientId)) return null;
-    return path.join(DATA_DIR, `${clientId}.json`);
+// === 工具函数 ===
+function getFilePath(uid) {
+    if (!uid || !/^\d+$/.test(uid)) return null;
+    return path.join(DATA_DIR, `${uid}.json`);
 }
 
 function getAIConfig() {
-    if (fs.existsSync(CONFIG_FILE)) {
-        return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    }
+    if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
     return null;
 }
 
-// === B站相关接口 (保持不变) ===
+function extractUidFromCookie(cookieStr) {
+    const match = cookieStr.match(/DedeUserID=(\d+)/);
+    return match ? match[1] : null;
+}
+
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Referer': 'https://www.bilibili.com/'
 };
 
+// === 登录相关 ===
 app.get('/get-qrcode', async (req, res) => {
     try {
         const response = await axios.get('https://passport.bilibili.com/x/passport-login/web/qrcode/generate', { headers: HEADERS });
@@ -69,149 +66,192 @@ app.get('/check-login', async (req, res) => {
         if (data.code === 0) {
             const cookies = response.headers['set-cookie'];
             const cookieStr = cookies.map(c => c.split(';')[0]).join('; ');
-            res.json({ status: 'success', cookie: cookieStr });
+            const uid = extractUidFromCookie(cookieStr);
+            res.json({ status: 'success', cookie: cookieStr, uid: uid });
         } else {
             res.json({ status: 'pending', code: data.code, message: data.message });
         }
     } catch (error) { res.status(500).json({ error: 'Error' }); }
 });
 
-app.post('/get-history-page', async (req, res) => {
-    const { cookie, cursor } = req.body;
-    if (!cookie) return res.status(401).json({ error: '未登录' });
+// === 后台扫描逻辑 ===
+async function runServerScan(uid, cookie) {
+    console.log(`[${uid}] 开始后台扫描任务...`);
+    const filePath = getFilePath(uid);
+    let currentData = { list: [], cursor: null };
+    if (fs.existsSync(filePath)) {
+        try { currentData = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch(e){}
+    }
+
+    activeTasks[uid] = { status: 'running', total: currentData.list.length, msg: '启动中...' };
+
+    let cursor = currentData.cursor;
+    const oneYearAgo = Date.now() / 1000 - (365 * 24 * 3600);
+    let isFinished = false;
+
     try {
-        let url = 'https://api.bilibili.com/x/web-interface/history/cursor?ps=20';
-        if (cursor) url += `&view_at=${cursor.view_at}&business=${cursor.business}`;
-        const historyRes = await axios.get(url, { headers: { ...HEADERS, Cookie: cookie } });
-        const data = historyRes.data.data;
-        if (!data.list) return res.json({ list: [], cursor: null });
-        const results = [];
-        for (const item of data.list) {
-            if (item.history.business !== 'archive') continue;
-            const bvid = item.history.bvid;
-            try {
-                const viewRes = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: { ...HEADERS, Cookie: cookie } });
-                const vData = viewRes.data.data;
-                results.push({
-                    title: vData.title, desc: vData.desc, tags: [vData.tname, vData.dynamic].filter(Boolean).join(' '),
-                    pic: vData.pic, bvid: bvid, author: vData.owner.name, view_at: item.view_at
-                });
-                await new Promise(r => setTimeout(r, 100));
-            } catch (e) {
-                results.push({ title: item.title, desc: '', tags: '', pic: item.cover, bvid: bvid, author: item.author_name, view_at: item.view_at });
+        while (activeTasks[uid] && activeTasks[uid].status === 'running') {
+            let url = 'https://api.bilibili.com/x/web-interface/history/cursor?ps=20';
+            if (cursor) url += `&view_at=${cursor.view_at}&business=${cursor.business}`;
+
+            const res = await axios.get(url, { headers: { ...HEADERS, Cookie: cookie } });
+            const data = res.data.data;
+
+            if (!data.list || data.list.length === 0) {
+                isFinished = true;
+                activeTasks[uid].msg = '已到达记录尽头';
+                break;
+            }
+
+            const newItems = [];
+            for (const item of data.list) {
+                if (item.history.business !== 'archive') continue;
+                const bvid = item.history.bvid;
+                try {
+                    const viewRes = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: { ...HEADERS, Cookie: cookie } });
+                    const vData = viewRes.data.data;
+                    newItems.push({
+                        title: vData.title, desc: vData.desc, tags: [vData.tname, vData.dynamic].filter(Boolean).join(' '),
+                        pic: vData.pic, bvid: bvid, author: vData.owner.name, view_at: item.view_at
+                    });
+                    const delay = Math.floor(Math.random() * 500) + 500;
+                    await new Promise(r => setTimeout(r, delay));
+                } catch (e) {
+                    newItems.push({ title: item.title, desc: '', tags: '', pic: item.cover, bvid: bvid, author: item.author_name, view_at: item.view_at });
+                }
+            }
+
+            currentData.list = currentData.list.concat(newItems);
+            currentData.cursor = data.cursor;
+            currentData.lastUpdated = Date.now();
+            fs.writeFileSync(filePath, JSON.stringify(currentData));
+
+            cursor = data.cursor;
+            activeTasks[uid].total = currentData.list.length;
+            const lastTime = newItems[newItems.length-1].view_at;
+            activeTasks[uid].lastTime = lastTime;
+            activeTasks[uid].msg = `正在获取: ${new Date(lastTime*1000).toLocaleDateString()}`;
+
+            if (lastTime < oneYearAgo) {
+                isFinished = true;
+                activeTasks[uid].msg = '已完成一年数据扫描';
+                break;
             }
         }
-        res.json({ list: results, cursor: data.cursor });
-    } catch (error) { res.status(500).json({ error: 'API Error' }); }
+    } catch (err) {
+        console.error(`[${uid}] 扫描出错:`, err.message);
+        if (activeTasks[uid]) {
+            activeTasks[uid].status = 'error';
+            activeTasks[uid].msg = '扫描中断: ' + err.message;
+        }
+    } finally {
+        if (activeTasks[uid] && activeTasks[uid].status === 'running') {
+             activeTasks[uid].status = isFinished ? 'done' : 'stopped';
+        }
+        console.log(`[${uid}] 任务结束`);
+    }
+}
+
+app.post('/start-scan', (req, res) => {
+    const { uid, cookie } = req.body;
+    if (!uid || !cookie) return res.status(400).json({ error: '缺少参数' });
+    if (activeTasks[uid] && activeTasks[uid].status === 'running') return res.json({ success: true, msg: '任务已在运行中' });
+    runServerScan(uid, cookie);
+    res.json({ success: true, msg: '后台扫描已启动' });
 });
 
-// === 数据存储接口 ===
-app.post('/load-progress', (req, res) => {
-    const { clientId } = req.body;
-    const fp = getUserFilePath(clientId);
-    if (fp && fs.existsSync(fp)) res.json(JSON.parse(fs.readFileSync(fp, 'utf8')));
-    else res.json({ list: [], cursor: null });
-});
-
-app.post('/save-batch', (req, res) => {
-    const { newItems, cursor, clientId } = req.body;
-    const fp = getUserFilePath(clientId);
-    if (!fp) return res.status(400);
-    let d = { list: [], cursor: null, lastUpdated: Date.now() };
-    if (fs.existsSync(fp)) try { d = JSON.parse(fs.readFileSync(fp)); } catch (e) {}
-    d.list = d.list.concat(newItems); d.cursor = cursor; d.lastUpdated = Date.now();
-    fs.writeFileSync(fp, JSON.stringify(d));
+app.post('/stop-scan', (req, res) => {
+    const { uid } = req.body;
+    if (activeTasks[uid]) activeTasks[uid].status = 'stopped';
     res.json({ success: true });
 });
 
-app.post('/clear-data', (req, res) => {
-    const { clientId } = req.body;
-    const fp = getUserFilePath(clientId);
-    if (fp && fs.existsSync(fp)) fs.unlinkSync(fp);
-    res.json({ success: true });
-});
-
-// === 管理员接口 (修改：增加 systemPrompt) ===
-app.post('/admin/save-config', (req, res) => {
-    const { password, apiUrl, apiKey, model, systemPrompt } = req.body;
-    if (password !== ADMIN_PASSWORD) return res.status(403).json({ error: '密码错误' });
-    
-    // 保存配置到文件
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ apiUrl, apiKey, model, systemPrompt }));
-    res.json({ success: true });
-});
-
-// 新增：获取当前配置（用于回显到前端，不返回密码）
-app.post('/admin/get-config', (req, res) => {
-    const { password } = req.body;
-    if (password !== ADMIN_PASSWORD) return res.status(403).json({ error: '密码错误' });
-    
-    const config = getAIConfig() || {};
-    res.json({ 
-        apiUrl: config.apiUrl || '', 
-        apiKey: config.apiKey || '', 
-        model: config.model || '', 
-        systemPrompt: config.systemPrompt || DEFAULT_SYSTEM_PROMPT 
+app.get('/scan-status', (req, res) => {
+    const { uid } = req.query;
+    const task = activeTasks[uid];
+    let total = 0;
+    let lastTime = 0;
+    const fp = getFilePath(uid);
+    if (fs.existsSync(fp)) {
+        try {
+            const d = JSON.parse(fs.readFileSync(fp));
+            total = d.list.length;
+            if (total > 0) lastTime = d.list[total-1].view_at;
+        } catch(e){}
+    }
+    res.json({
+        status: task ? task.status : 'idle',
+        msg: task ? task.msg : '空闲',
+        total: task ? task.total : total,
+        lastTime: task ? task.lastTime : lastTime
     });
 });
 
-// === AI 分析接口 (修改：使用自定义 Prompt) ===
-app.post('/analyze-user', async (req, res) => {
-    const { videoData } = req.body;
-    const config = getAIConfig();
+app.post('/load-data', (req, res) => {
+    const { uid } = req.body;
+    const fp = getFilePath(uid);
+    if (fs.existsSync(fp)) res.json(JSON.parse(fs.readFileSync(fp, 'utf8')));
+    else res.json({ list: [] });
+});
 
-    if (!config || !config.apiKey) return res.status(500).json({ error: 'AI 未配置' });
+app.get('/download-data', (req, res) => {
+    const { uid } = req.query;
+    const fp = getFilePath(uid);
+    if (fs.existsSync(fp)) res.download(fp, `bilibili_history_${uid}.json`);
+    else res.status(404).send('文件不存在');
+});
 
-    // 智能修正 URL
-    let targetUrl = config.apiUrl.trim();
-    if (!targetUrl.endsWith('/chat/completions')) {
-        targetUrl = targetUrl.replace(/\/+$/, '') + '/chat/completions';
+// ==========================================
+// 新增：上传数据接口
+// ==========================================
+app.post('/upload-data', (req, res) => {
+    const { uid, data } = req.body;
+    if (!uid || !data || !data.list) return res.status(400).json({ error: '数据格式错误' });
+    
+    const fp = getFilePath(uid);
+    try {
+        // 覆盖写入
+        fs.writeFileSync(fp, JSON.stringify(data));
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: '写入失败' });
     }
+});
 
-    // 【关键修改】使用配置中的 Prompt，如果没有则使用默认值
-    const activeSystemPrompt = config.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+app.post('/clear-data', (req, res) => {
+    const { uid } = req.body;
+    const fp = getFilePath(uid);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    if (activeTasks[uid]) delete activeTasks[uid];
+    res.json({ success: true });
+});
 
-    const userContent = videoData.slice(0, 80).map(v => `标题:${v.title}, Tag:${v.tags}, 简介:${v.desc.substring(0, 50)}`).join('\n');
+// === AI 接口 ===
+app.post('/admin/save-config', (req, res) => { const { password, apiUrl, apiKey, model, systemPrompt } = req.body; if (password !== ADMIN_PASSWORD) return res.status(403).json({ error: '密码错误' }); fs.writeFileSync(CONFIG_FILE, JSON.stringify({ apiUrl, apiKey, model, systemPrompt })); res.json({ success: true }); });
+app.post('/admin/get-config', (req, res) => { const { password } = req.body; if (password !== ADMIN_PASSWORD) return res.status(403).json({ error: '密码错误' }); const config = getAIConfig() || {}; res.json({ apiUrl: config.apiUrl || '', apiKey: config.apiKey || '', model: config.model || '', systemPrompt: config.systemPrompt || '' }); });
+
+app.post('/analyze-user', async (req, res) => {
+    const { videoData, stats } = req.body;
+    const config = getAIConfig();
+    if (!config || !config.apiKey) return res.status(500).json({ error: 'AI 未配置' });
+    
+    let targetUrl = config.apiUrl.trim();
+    if (!targetUrl.endsWith('/chat/completions')) targetUrl = targetUrl.replace(/\/+$/, '') + '/chat/completions';
+    
+    const activeSystemPrompt = config.systemPrompt || "你是一个B站用户画像分析师...";
+    let statsText = stats ? `【统计数据】\n总数:${stats.total}\n浓度:${stats.percentage}\n` : "";
+    const userContent = `${statsText}\n【记录】:\n${videoData.slice(0, 80).map(v => `标题:${v.title}, Tag:${v.tags}`).join('\n')}`;
 
     try {
         const aiRes = await axios.post(targetUrl, {
             model: config.model,
-            messages: [
-                { role: "system", content: activeSystemPrompt },
-                { role: "user", content: userContent }
-            ],
+            messages: [{ role: "system", content: activeSystemPrompt }, { role: "user", content: userContent }],
             temperature: 0.7
-        }, {
-            headers: {
-                'Authorization': `Bearer ${config.apiKey}`,
-                'Content-Type': 'application/json'
-            }
-        });
-
+        }, { headers: { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' } });
         const choice = aiRes.data.choices?.[0];
-        const content = choice?.message?.content || choice?.text || JSON.stringify(aiRes.data);
-        res.json({ result: content });
-
-    } catch (error) {
-        console.error('AI Error:', error.message);
-        if (error.response) return res.status(500).json({ error: `AI 报错: ${JSON.stringify(error.response.data)}` });
-        res.status(500).json({ error: 'AI 服务连接失败' });
-    }
+        res.json({ result: choice?.message?.content || choice?.text });
+    } catch (error) { res.status(500).json({ error: 'AI Error' }); }
 });
-
-// 定时清理
-setInterval(() => {
-    fs.readdir(DATA_DIR, (err, files) => {
-        if (err) return;
-        const now = Date.now();
-        files.forEach(file => {
-            const fp = path.join(DATA_DIR, file);
-            fs.stat(fp, (err, stats) => {
-                if (!err && (now - stats.mtimeMs > 24 * 3600 * 1000)) fs.unlink(fp, () => {});
-            });
-        });
-    });
-}, 3600 * 1000);
 
 app.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}`);
