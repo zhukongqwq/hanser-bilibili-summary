@@ -87,7 +87,7 @@
             <button class="btn" id="start-btn" onclick="startServerScan()">🚀 启动后台扫描</button>
             <button class="btn stop hidden" id="stop-btn" onclick="stopServerScan()">⏹ 停止扫描</button>
             
-            <button class="btn download" onclick="downloadData()">📥 下载数据</button>
+            <button class="btn download" onclick="downloadData()">📥 下载存档</button>
             <!-- 隐藏的文件上传 input -->
             <input type="file" id="file-upload" style="display:none" accept=".json" onchange="handleFileUpload(this)">
             <button class="btn upload" onclick="document.getElementById('file-upload').click()">📤 上传存档</button>
@@ -127,6 +127,7 @@
         let statusTimer = null;
         let chartInstance = null;
         let allHistoryData = [];
+        let hasAlertedSave = false; // 防止重复弹窗
 
         function init() {
             renderKeywords();
@@ -157,7 +158,11 @@
             try {
                 const res = await fetch('/start-scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uid: currentUid, cookie: userCookie }) });
                 const data = await res.json();
-                if(data.success) { alert('后台扫描已启动'); pollServerStatus(); } else alert(data.msg);
+                if(data.success) { 
+                    alert('后台扫描已启动'); 
+                    hasAlertedSave = false; // 重置弹窗标记
+                    pollServerStatus(); 
+                } else alert(data.msg);
             } catch(e) { alert('请求失败'); }
         }
 
@@ -179,8 +184,18 @@
                     document.getElementById('stop-btn').classList.add('hidden');
                 }
 
+                // === 智能提醒逻辑 ===
+                if (data.status === 'done' && !hasAlertedSave) {
+                    hasAlertedSave = true; // 标记已弹窗
+                    // 延时一点点，等UI刷新完
+                    setTimeout(() => {
+                        if(confirm("✅ 扫描/增量更新已完成！\n\n强烈建议您现在【下载存档】，以便下次实现无缝续接。\n是否立即下载？")) {
+                            downloadData();
+                        }
+                    }, 500);
+                }
+
                 const percent = data.lastTime ? Math.min(100, ((Date.now()/1000 - data.lastTime) / (365*24*3600)) * 100).toFixed(1) : 0;
-                const dateStr = data.lastTime ? new Date(data.lastTime * 1000).toLocaleDateString() : '未知';
                 
                 document.getElementById('status-text').innerText = `[${data.status}] ${data.msg} (进度: ${percent}%)`;
                 document.getElementById('progress-bar').style.width = `${percent}%`;
@@ -201,39 +216,28 @@
 
         function downloadData() { window.open(`/download-data?uid=${currentUid}`, '_blank'); }
 
-        // === 核心：上传文件 ===
         function handleFileUpload(input) {
             const file = input.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = async function(e) {
                 try {
                     const jsonData = JSON.parse(e.target.result);
                     if (!jsonData.list) throw new Error('无效的存档文件');
-                    
                     const res = await fetch('/upload-data', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ uid: currentUid, data: jsonData })
                     });
-                    
                     const resData = await res.json();
-                    if (resData.success) {
-                        alert('存档上传成功！');
-                        loadFullData(); // 刷新界面
-                    } else {
-                        alert('上传失败');
-                    }
-                } catch (err) {
-                    alert('文件解析失败: ' + err.message);
-                }
+                    if (resData.success) { alert('存档上传成功！'); loadFullData(); } 
+                    else { alert('上传失败'); }
+                } catch (err) { alert('文件解析失败: ' + err.message); }
             };
             reader.readAsText(file);
-            input.value = ''; // 清空以允许重复上传
+            input.value = '';
         }
 
-        // === 核心：保存图表图片 ===
         function saveChartImage() {
             const canvas = document.getElementById('myChart');
             const link = document.createElement('a');
